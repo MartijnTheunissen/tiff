@@ -1,6 +1,11 @@
 %prolog
 
 :- use_module(library(aggregate)).
+:- use_module(library(chr)).
+
+:- chr_constraint dc_i/5.
+:- chr_constraint bound/3.
+:- chr_constraint done/0.
 
 %MinC types
 primitive_type(short).
@@ -8,21 +13,25 @@ primitive_type(long).
 
 compact_type(T) :-
     primitive_type(T).
-compact_type(pointer_type(pointer_type(pointer_type(pointer_type(pointer_type(_)))))) :-
-    !, fail. % failsafe.
 compact_type(pointer_type(array_type(T))) :-
-    atom(T).
+    primitive_type(T).
 compact_type(pointer_type(struct_type(T))) :-
     atom(T).
 compact_type(pointer_type(T)) :-
     compact_type(T).
 
-pointer_type(T) :-
+compact_type(T, _) :- 
+    primitive_type(T).
+compact_type(pointer_type(array_type(T)), _) :-
+    primitive_type(T).
+compact_type(pointer_type(struct_type(T)), _) :-
     atom(T).
-array_type(T) :-
-    atom(T).
-struct_type(Name) :-
-    atom(Name).
+compact_type(pointer_type(T), _) :-
+    primitive_type(T).
+compact_type(pointer_type(T), N) :- 
+    N2 is N - 1,
+    N2 >= 0,
+    compact_type(T, N2).
 
 general_type(T) :-
     compact_type(T).
@@ -361,9 +370,8 @@ tag(long, L, T) :-
 %dc_i(VarMap, TypeEnv, StructDefs, Instruction, assign(L, E)).
 
 % tr-oper+-r*1
-dc_i(varmap(VM), context(Context), StructDefs, ins(oper+(4, Ri, Rj, C)), assn(variable(X), oper+(variable(X), Y * M))) :-
-    member((Ri, X, 4), VM),
-    member((Rj, Y, 4), VM),
+bound(context(Context), X, pointer_type(array_type(O))) \
+dc_i(varmap(VM), context(Context), StructDefs, ins(oper+(4, Ri, Rj, C)), Assn) <=> member((Ri, X, 4), VM), member((Rj, Y, 4), VM) |
     member((X, pointer_type(array_type(O))), Context),
     compact_type(O),
     member((Y, long), Context),
@@ -371,23 +379,36 @@ dc_i(varmap(VM), context(Context), StructDefs, ins(oper+(4, Ri, Rj, C)), assn(va
     tag(long, M, TaggedVal),
     wt_le(context(Context), StructDefs, TaggedVal, long),
     number(C),
-    M is C / Size. 
+    M is C / Size,
+    Assn = oper+(variable(X), Y * M).
+
+bound(context(Context), X, pointer_type(array_type(O))) \
+dc_i(varmap(VM), context(Context), StructDefs, ins(oper+(4, Ri, Rj, C)), Assn) <=> member((Ri, X, 4), VM), member((Rj, Y, 4), VM) |
+    member((X, pointer_type(array_type(O))), Context),
+    compact_type(O),
+    member((Y, long), Context),
+    sizeof(O, Size),
+    tag(long, M, TaggedVal),
+    wt_le(context(Context), StructDefs, TaggedVal, long),
+    number(C),
+    M is C / Size,
+    Assn = assn(variable(X), oper+(variable(X), Y * M)).
 
 % tr-oper+-r*2
-dc_i(varmap(VM), context(Context), StructDefs, ins(oper+(W, Ri, Rj, C)), assn(variable(X), oper+(variable(X), Res))) :-
-    member((Ri, X, W), VM),
-    member((Rj, Y, W), VM),
+bound(context(Context), X, T), 
+bound(context(Context), Y, T) \
+dc_i(varmap(VM), context(Context), StructDefs, ins(oper+(W, Ri, Rj, C)), Assn) <=> member((Ri, X, W), VM), member((Rj, Y, W), VM), primitive_type(T) |
     member((X, T), Context),
     member((Y, T), Context),
-    primitive_type(T),
     tag(T, C, TaggedC),
     wt_le(context(Context), StructDefs, TaggedC, T),
     number(C),
-    Res = Y * C.
+    Res = Y * C,
+    Assn = assn(variable(X), oper+(variable(X), Res)).
 
 % tr-oper+-rc
-dc_i(varmap(VM), context(Context), StructDefs, ins(oper+(4, Ri, C)), assn(variable(X), oper+(variable(X), M))) :-
-    member((Ri, X, 4), VM),
+bound(context(Context), X, pointer_type(array_type(O))) \
+dc_i(varmap(VM), context(Context), StructDefs, ins(oper+(4, Ri, C)), Assn) <=> member((Ri, X, 4), VM) |
     member((X, pointer_type(array_type(O))), Context),
     compact_type(O),
     primitive_type(T),
@@ -395,82 +416,73 @@ dc_i(varmap(VM), context(Context), StructDefs, ins(oper+(4, Ri, C)), assn(variab
     number(C),
     M is C / Size,
     tag(T, M, TaggedVal),
-    wt_le(context(Context), StructDefs, TaggedVal, T).
+    wt_le(context(Context), StructDefs, TaggedVal, T),
+    Assn = assn(variable(X), oper+(variable(X), M)).
 
 % tr-oper*-rc
-dc_i(varmap(VM), context(Context), StructDefs, ins(oper*(W, Ri, C)), assn(variable(X), oper*(variable(X), C))) :-
-    member((Ri, X, W), VM),
+bound(context(Context), X, T) \
+dc_i(varmap(VM), context(Context), StructDefs, ins(oper*(W, Ri, C)), Assn) <=> member((Ri, X, W), VM), primitive_type(T) |
     member((X, T), Context),
-    primitive_type(T),
     sizeof(T, W),
     number(C),
     tag(T, C, TaggedC),
-    wt_le(context(Context), StructDefs, TaggedC, T).
+    wt_le(context(Context), StructDefs, TaggedC, T),
+    Assn = assn(variable(X), oper*(variable(X), C)).
 
 % tr-oper*-rr
-dc_i(varmap(VM), context(Context), _, ins(oper*(W, Ri, Rj)), assn(variable(X), oper*(variable(X), variable(Y)))) :-
-    member((Ri, X, W), VM),
-    member((Rj, Y, W), VM),
-    member((X, T), Context),
-    member((Y, T), Context),
+bound(context(Context), X, T), 
+bound(context(Context), Y, T) \ 
+dc_i(varmap(VM), context(Context), _, ins(oper*(W, Ri, Rj)), Assn) <=> member((Ri, X, W), VM), member((Rj, Y, W), VM), primitive_type(T) |
     primitive_type(T),
-    sizeof(T, W).
+    sizeof(T, W),
+    Assn = assn(variable(X), oper*(variable(X), variable(Y))).
+
+% tr-mov-r0
+bound(context(Context), X, pointer_type(O)) \
+dc_i(varmap(VM), context(Context), _, ins(mov1(4, Ri, 0)), Assn) <=> member((Ri, X, 4), VM) |
+    member((X, pointer_type(O)), Context),
+    Assn = assn(variable(X), ptr(0)).
 
 % tr-mov-rc
-dc_i(varmap(VM), context(Context), StructDefs, ins(mov1(W, Ri, C)), assn(variable(X), C)) :-
-    member((Ri, X, W), VM),
+bound(context(Context), X, T) \ 
+dc_i(varmap(VM), context(Context), StructDefs, ins(mov1(W, Ri, C)), Assn) <=> member((Ri, X, W), VM), primitive_type(T) |
     member((X, T), Context),
-    primitive_type(T),
     sizeof(T, W),
     number(C),
     tag(T, C, TaggedC),
-    wt_le(context(Context), StructDefs, TaggedC, T).
-
-% tr-mov-r0
-dc_i(varmap(VM), context(Context), _, ins(mov1(4, Ri, 0)), assn(variable(X), ptr(0))) :-
-    member((Ri, X, 4), VM),
-    member((X, pointer_type(_)), Context).
+    wt_le(context(Context), StructDefs, TaggedC, T),
+    Assn = assn(variable(X), C).
 
 % tr-mov-rr
-dc_i(varmap(VM), context(Context), StrucMap, ins(mov4(W, Ri, Rj)), assn(variable(X), variable(Y))) :-
-    member((Ri, X, W), VM),
-    member((Rj, Y, W), VM),
+bound(context(Context), X, O1), 
+bound(context(Context), Y, O2) \
+dc_i(varmap(VM), context(Context), StrucMap, ins(mov4(W, Ri, Rj)), Assn) <=> member((Ri, X, W), VM), member((Rj, Y, W), VM) |
     member((X, O1), Context),
     member((Y, O2), Context),
     compact_type(O1),
     compact_type(O2),
     sizeof(O1, W),
     sizeof(O2, W),
-    wt_sub(StrucMap, O2, O1).
-
-% tr-mov-ri1
-dc_i(varmap(VM), context(Context), StrucMap, ins(mov2(W, Ri, IndRj)), assn(variable(X), ptr(variable(Y)))) :-
-    member((Ri, X, W), VM),
-    member((IndRj, Y, 4), VM),
-    member((X, O1), Context),
-    member((Y, pointer_type(O2)), Context),
-    compact_type(O1),
-    compact_type(O2),
-    sizeof(O1, W),
-    sizeof(O2, W),
-    wt_sub(StrucMap, O2, O1).
+    wt_sub(StrucMap, O2, O1),
+    Assn = assn(variable(X), variable(Y)).
 
 % tr-mov-ri2
-dc_i(varmap(VM), context(Context), StrucMap, ins(mov2(W, Ri, IndRj)), assn(variable(X), arr(variable(Y), long(0)))) :-
-    member((Ri, X, W), VM),
-    member((IndRj, Y, 4), VM),
+bound(context(Context), X, O1), 
+bound(context(Context), Y, pointer_type(array_type(O2))) \
+dc_i(varmap(VM), context(Context), StrucMap, ins(mov2(W, Ri, IndRj)), Assn) <=> member((Ri, X, W), VM), member((IndRj, Y, 4), VM) |
     member((X, O1), Context),
     member((Y, pointer_type(array_type(O2))), Context),
     compact_type(O1),
     compact_type(O2),
     sizeof(O1, W),
     sizeof(O2, W),
-    wt_sub(StrucMap, O2, O1).
+    wt_sub(StrucMap, O2, O1),
+    Assn = assn(variable(X), arr(variable(Y), long(0))).
 
 % tr-mov-ri3
-dc_i(varmap(VM), context(Context), strucmap(S), ins(mov2(W, Ri, IndRj)), assn(variable(X), fld(variable(Y), long(0)))) :-
-    member((Ri, X, W), VM),
-    member((IndRj, Y, 4), VM),
+bound(context(Context), X, O), 
+bound(context(Context), Y, pointer_type(struct_type(Name))) \
+dc_i(varmap(VM), context(Context), strucmap(S), ins(mov2(W, Ri, IndRj)), Assn) <=> member((Ri, X, W), VM), member((IndRj, Y, 4), VM) |
     member((X, O), Context),
     member((Y, pointer_type(struct_type(Name))), Context),
     compact_type(O),
@@ -478,25 +490,27 @@ dc_i(varmap(VM), context(Context), strucmap(S), ins(mov2(W, Ri, IndRj)), assn(va
     nth0(0, FieldTypeVec, O0),
     sizeof(O, W),
     sizeof(O0, W),
-    wt_sub(strucmap(S), O0, O).
+    wt_sub(strucmap(S), O0, O),
+    Assn = assn(variable(X), fld(variable(Y), long(0))).
 
-% tr-mov-ir1
-dc_i(varmap(VM), context(Context), StrucMap, ins(mov5(W, IndRi, Rj)), assn(ptr(variable(X)), variable(Y))) :-
-    member((IndRi, X, 4), VM),
-    member((Rj, Y, W), VM),
-    member((X, pointer_type(O3)), Context),
-    member((Y, O2), Context),
-    O1 = pointer_type(O3),
+% tr-mov-ri1
+bound(context(Context), X, O1), 
+bound(context(Context), Y, pointer_type(O2)) \
+dc_i(varmap(VM), context(Context), StrucMap, ins(mov2(W, Ri, IndRj)), Assn) <=> member((Ri, X, W), VM), member((IndRj, Y, 4), VM) |
+    member((X, O1), Context),
+    member((Y, pointer_type(O2)), Context),
     compact_type(O1),
     compact_type(O2),
     sizeof(O1, W),
     sizeof(O2, W),
-    wt_sub(StrucMap, O2, O3).
+    wt_sub(StrucMap, O2, O1),
+    Assn = assn(variable(X), ptr(variable(Y))).
+
 
 % tr-mov-ir2
-dc_i(varmap(VM), context(Context), StrucMap, ins(mov5(W, IndRi, Rj)), assn(arr(variable(X), long(0)), variable(Y))) :-
-    member((IndRi, X, 4), VM),
-    member((Rj, Y, W), VM),
+bound(context(Context), X, pointer_type(array_type(O3))), 
+bound(context(Context), Y, O2) \ 
+dc_i(varmap(VM), context(Context), StrucMap, ins(mov5(W, IndRi, Rj)), Assn) <=> member((IndRi, X, 4), VM), member((Rj, Y, W), VM) |
     member((X, pointer_type(array_type(O3))), Context),
     member((Y, O2), Context),
     O1 = pointer_type(array_type(O3)),
@@ -504,24 +518,40 @@ dc_i(varmap(VM), context(Context), StrucMap, ins(mov5(W, IndRi, Rj)), assn(arr(v
     compact_type(O2),
     sizeof(O1, W),
     sizeof(O2, W),
-    wt_sub(StrucMap, O2, O3).
-%
+    wt_sub(StrucMap, O2, O3),
+    Assn = assn(arr(variable(X), long(0)), variable(Y)).
+
 % tr-mov-ir3
-dc_i(varmap(VM), context(Context), strucmap(S), ins(mov5(W, IndRi, Rj)), assn(fld(variable(X), long(0)), variable(Y))) :-
-    member((IndRi, X, 4), VM),
-    member((Rj, Y, W), VM),
+bound(context(Context), X, pointer_type(struct_type(Name))), 
+bound(context(Context), Y, O) \ 
+dc_i(varmap(VM), context(Context), strucmap(S), ins(mov5(W, IndRi, Rj)), Assn) <=> member((IndRi, X, 4), VM), member((Rj, Y, W), VM) |
     member((X, pointer_type(struct_type(Name))), Context),
     member((Y, O), Context),
     compact_type(O),
     member((Name, FieldTypeVec), S),
     nth0(0, FieldTypeVec, O0),
     sizeof(O, W),
-    wt_sub(strucmap(S), O0, O).
+    wt_sub(strucmap(S), O0, O),
+    Assn = assn(fld(variable(X), long(0)), variable(Y)).
+
+% tr-mov-ir1
+bound(context(Context), X, pointer_type(O3)), 
+bound(context(Context), Y, O2) \ 
+dc_i(varmap(VM), context(Context), StrucMap, ins(mov5(W, IndRi, Rj)), Assn) <=> member((IndRi, X, 4), VM), member((Rj, Y, W), VM) |
+    member((X, pointer_type(O3)), Context),
+    member((Y, O2), Context),
+    O1 = pointer_type(O3),
+    compact_type(O1),
+    compact_type(O2),
+    sizeof(O1, W),
+    sizeof(O2, W),
+    wt_sub(StrucMap, O2, O3),
+    Assn = assn(ptr(variable(X)), variable(Y)).
 
 % tr-mov-ri+1
-dc_i(varmap(VM), context(Context), StrucMap, ins(mov3(W, Ri, IndRj, C)), assn(variable(X), arr(variable(Y), TaggedM))) :-
-    member((Ri, X, W), VM),
-    member((IndRj, Y, 4), VM),
+bound(context(Context), X, O1), 
+bound(context(Context), Y, pointer_type(array_type(O2))) \ 
+dc_i(varmap(VM), context(Context), StrucMap, ins(mov3(W, Ri, IndRj, C)), Assn) <=> member((Ri, X, W), VM), member((IndRj, Y, 4), VM) |
     member((X, O1), Context),
     member((Y, pointer_type(array_type(O2))), Context),
     compact_type(O1),
@@ -533,12 +563,13 @@ dc_i(varmap(VM), context(Context), StrucMap, ins(mov3(W, Ri, IndRj, C)), assn(va
     number(C),
     M is C / W,
     tag(T, M, TaggedM),
-    wt_le(context(Context), StrucMap, TaggedM, T).
+    wt_le(context(Context), StrucMap, TaggedM, T),
+    Assn = assn(variable(X), arr(variable(Y), TaggedM)).
 
 % tr-mov-ri+2
-dc_i(varmap(VM), context(Context), strucmap(S), ins(mov3(W, Ri, IndRj, C)), assn(variable(X), fld(variable(Y), long(M)))) :-
-    member((Ri, X, W), VM),
-    member((IndRj, Y, 4), VM),
+bound(context(Context), X, O), 
+bound(context(Context), Y, pointer_type(struct_type(Name))) \
+dc_i(varmap(VM), context(Context), strucmap(S), ins(mov3(W, Ri, IndRj, C)), Assn) <=> member((Ri, X, W), VM), member((IndRj, Y, 4), VM) |
     member((X, O), Context),
     member((Y, pointer_type(struct_type(Name))), Context),
     compact_type(O),
@@ -547,12 +578,13 @@ dc_i(varmap(VM), context(Context), strucmap(S), ins(mov3(W, Ri, IndRj, C)), assn
     sizeof(O, W),
     nth0(0, FieldTypeVec, O0),
     sizeof(O0, W),
-    wt_sub(strucmap(S), O0, O).
+    wt_sub(strucmap(S), O0, O),
+    Assn = fld(variable(Y), long(M)).
 
 % tr-mov-i+r1
-dc_i(varmap(VM), context(Context), StrucMap, ins(mov6(W, IndRi, C, Rj)), assn(arr(variable(X), TaggedM), variable(y))) :-
-    member((IndRi, X, 4), VM),
-    member((Rj, Y, W), VM),
+bound(context(Context), X, pointer_type(array_type(O1))), 
+bound(context(Context), Y, O2) \
+dc_i(varmap(VM), context(Context), StrucMap, ins(mov6(W, IndRi, C, Rj)), Assn) <=> member((IndRi, X, 4), VM), member((Rj, Y, W), VM) |
     member((X, pointer_type(array_type(O1))), Context),
     member((Y, O2), Context),
     compact_type(O1),
@@ -564,12 +596,13 @@ dc_i(varmap(VM), context(Context), StrucMap, ins(mov6(W, IndRi, C, Rj)), assn(ar
     wt_le(context(Context), StrucMap, TaggedM, T),
     sizeof(O1, W), 
     sizeof(O2, W),
-    wt_sub(StrucMap, O2, O1).
+    wt_sub(StrucMap, O2, O1),
+    Assn = assn(arr(variable(X), TaggedM), variable(Y)).
 
 % tr-mov-i+r2
-dc_i(varmap(VM), context(Context), strucmap(S), ins(mov6(W, IndRi, C, Rj)), assn(fld(variable(X), long(M)), variable(Y))) :-
-    member((IndRi, X, 4), VM),
-    member((Rj, Y, W), VM),
+bound(context(Context), X, pointer_type(struct_type(Name))), 
+bound(context(Context), Y, O) \
+dc_i(varmap(VM), context(Context), strucmap(S), ins(mov6(W, IndRi, C, Rj)), Assn) <=> member((IndRi, X, 4), VM), member((Rj, Y, W), VM) |
     member((X, pointer_type(struct_type(Name))), Context),
     member((Y, O), Context),
     compact_type(O),
@@ -577,47 +610,53 @@ dc_i(varmap(VM), context(Context), strucmap(S), ins(mov6(W, IndRi, C, Rj)), assn
     sizeof_to_m(FieldTypeVec, M, C),
     sizeof(O, W),
     nth0(0, FieldTypeVec, O0),
-    wt_sub(strucmap(S), O0, O).
+    wt_sub(strucmap(S), O0, O),
+    Assn = assn(fld(variable(X), long(M)), variable(Y)).
 
 %tr-alloc-r*
-dc_i(varmap(VM), context(Context), StrucMap, ins(alloc2(Ri, Rj, C)), assn(variable(X), new_arr(O, Res))) :-
-    member((Ri, X, 4), VM),
-    member((Rj, Y, ST), VM),
+bound(context(Context), X, pointer_type(array_type(O))), 
+bound(context(Context), Y, T) \
+dc_i(varmap(VM), context(Context), StrucMap, ins(alloc2(Ri, Rj, C)), Assn) <=> member((Ri, X, 4), VM), member((Rj, Y, ST), VM), primitive_type(T) |
     member((X, pointer_type(array_type(O))), Context),
     member((Y, T), Context),
     sizeof(T, ST),
-    primitive_type(T),
     sizeof(O, W),
     number(C),
     M is C / W,
     tag(T, M, TaggedM),
     wt_le(context(Context), StrucMap, TaggedM, T),
-    Res = Y * M.
+    Res = Y * M,
+    Assn = assn(variable(X), new_arr(O, Res)).
 
-%tr-alloc-rc1
-dc_i(varmap(VM), context(Context), _, ins(alloc1(Ri, C)), assn(variable(X), new_compact(O))) :-
-    member((Ri, X, 4), VM),
-    member((X, pointer_type(O)), Context),
-    sizeof(O, C).
 
 %tr-alloc-rc2
-dc_i(varmap(VM), context(Context), strucmap(S), ins(alloc1(Ri, C)), assn(variable(X), new_struct(Name))) :-
-    member((Ri, X, 4), VM),
+bound(context(Context), X, pointer_type(struct_type(Name))) \
+dc_i(varmap(VM), context(Context), strucmap(S), ins(alloc1(Ri, C)), Assn) <=>  member((Ri, X, 4), VM) |
     member((X, pointer_type(struct_type(Name))), Context),
     member((Name, FieldTypeVec), S),
-    sizeofall(FieldTypeVec, C).
+    sizeofall(FieldTypeVec, C),
+    Assn = assn(variable(X), new_struct(Name)).
 
 %tr-alloc-rc3
-dc_i(varmap(VM), context(Context), StrucMap, ins(alloc1(Ri, C)), assn(variable(X), new_arr(O, M))) :-
-    member((Ri, X, 4), VM),
+bound(context(Context), X, pointer_type(array_type(O))) \
+dc_i(varmap(VM), context(Context), StrucMap, ins(alloc1(Ri, C)), Assn) <=> member((Ri, X, 4), VM) |
     member((X, pointer_type(array_type(O))), Context),
     sizeof(O, Size),
     number(C),
     M is C / Size,
-    primitive_type(T),
+    T = long,
     tag(T, M, TaggedM),
-    wt_le(context(Context), StrucMap, TaggedM, T).
+    wt_le(context(Context), StrucMap, TaggedM, T),
+    Assn = assn(variable(X), new_arr(O, M)).
 
+%tr-alloc-rc1
+bound(context(Context), X, pointer_type(O)) \
+dc_i(varmap(VM), context(Context), _, ins(alloc1(Ri, C)), Assn) <=> member((Ri, X, 4), VM) |
+    member((X, pointer_type(O)), Context),
+    sizeof(O, C),
+    Assn = assn(variable(X), new_compact(O)).
+
+    
 %dc_b(LabelMap, VarMap, Context, StrucMap, Block, Statement).
 dc_b(_, _, _, _, ret, return). % tr-ret
 
@@ -652,7 +691,27 @@ dc_d(StrucMap, fdef(Rargs, Rlocs, Rret, ABMap, Index), func(Args, Locals, Label,
     member((A1, L1), LabelMap), 
     member((A1, Block), ABMap), 
     member((L1, Stmt), LS), 
-    dc_b(labelmap(LabelMap), varmap(VarMap), context(Context), StrucMap, Block, Stmt).
+    dc_b(labelmap(LabelMap), varmap(VarMap), context(Context), StrucMap, Block, Stmt),
+    !,
+    %Context = [(rx, pointer_type(pointer_type(long))), (ry, pointer_type(long))],
+    labelingV(VarMap),
+    labelingC(context(Context), context(Context)).
+
+labelingV([]).
+labelingV([(_, _, W) | Tail]) :-
+    member(W, [4]),
+    labelingV(Tail).
+
+labelingC(_, context([])) :- done.
+labelingC(Original, context([(X, T) | Tail])) :-
+    compact_type(T, 1),
+    bound(Original, X, T),
+    labelingC(Original, context(Tail)).
+
+done, dc_i(_, _, _, _, _) <=> true | fail.
+done \ bound(context(C), X, T) <=> true | nonvar(X), nonvar(T), member((X, T), C). 
+bound(context([]), _, _) <=> true | fail.
+done <=> true | true.
 
 %comb(ABMap, LS, LabelMap) :-
 comb([], [], []).
